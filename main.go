@@ -7,11 +7,14 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/disintegration/imaging"
 )
@@ -20,11 +23,13 @@ const (
 	// 文件存储根目录
 	StorageRoot = "./data/"
 	// 缓存文件存储根目录
-	StorageCacheRoot = "./data/cache"
+	StorageCacheRoot = "./data/cache/"
 	// 监听端口
 	Port = ":8080"
 
 	Slash = "/"
+
+	PIC_CACHE_EXPIRE_TIME = 24 * time.Hour
 )
 
 var httpHandlerMap map[string]func(writer http.ResponseWriter, request *http.Request)
@@ -38,6 +43,9 @@ func main() {
 
 	// 注册路由处理函数
 	http.HandleFunc("/", handler)
+
+	//定期清理过期缓存
+	go startCleaner()
 
 	fmt.Printf("🚀 GOSS Object Storage running on %s\n", Port)
 	log.Fatal(http.ListenAndServe(Port, nil))
@@ -111,8 +119,6 @@ func getOriginalFile(writer http.ResponseWriter, request *http.Request, filePath
 		return
 	}
 
-	log.Printf("🔴")
-
 	//file, err := os.Open(filePath)
 	//if err != nil {
 	//	log.Printf("open file error: %v", err)
@@ -183,7 +189,7 @@ func tryGetFromCache(writer http.ResponseWriter, request *http.Request, filePath
 	//aaa_1x10.png
 	newFileName, suffix := genFileName(filePath, width, height)
 	sum := md5.Sum([]byte(newFileName))
-	encodeFileName := StorageCacheRoot + "/" + hex.EncodeToString(sum[:]) + "." + suffix
+	encodeFileName := StorageCacheRoot + hex.EncodeToString(sum[:]) + "." + suffix
 
 	//若存在缓存，直接返回
 	if _, err := os.Stat(encodeFileName); err == nil {
@@ -233,4 +239,32 @@ func genFileName(filePath string, width int, height int) (string, string) {
 	//png
 	suffix := fullNameArray[1]
 	return fileName, suffix
+}
+
+func startCleaner() {
+	ticker := time.NewTicker(1 * time.Hour)
+	for range ticker.C {
+		log.Printf("begin clean")
+		cleanExpiredFiles()
+		log.Printf("end clean")
+	}
+}
+
+func cleanExpiredFiles() {
+	err := filepath.Walk(StorageCacheRoot, func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if time.Since(info.ModTime()) > PIC_CACHE_EXPIRE_TIME {
+			log.Printf("delete expired file: %s\n", path)
+			os.Remove(path)
+		}
+		return nil
+	})
+	if err != nil {
+		log.Printf("clean error: %v", err)
+	}
 }
